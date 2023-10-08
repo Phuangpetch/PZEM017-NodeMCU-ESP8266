@@ -1,0 +1,156 @@
+#include <SoftwareSerial.h>
+#include <ModbusMaster.h>
+SoftwareSerial PZEMSerial;
+#define MAX485_RO  D2
+#define MAX485_RE  D1
+#define MAX485_DE  D0
+#define MAX485_DI  D3
+static uint8_t pzemSlaveAddr = 0x01;
+static uint16_t NewshuntAddr = 0x0001;
+ModbusMaster node;
+float PZEMVoltage, PZEMCurrent, PZEMPower, PZEMEnergy;
+unsigned long startMillisPZEM;
+unsigned long currentMillisPZEM;
+const unsigned long periodPZEM = 1000;
+unsigned long startMillisReadData;
+unsigned long startMillis1;
+
+void setup()
+{
+  startMillis1 = millis();
+  Serial.begin(115200);
+  PZEMSerial.begin(9600, SWSERIAL_8N2, MAX485_RO, MAX485_DI);
+  startMillisPZEM = millis();
+  pinMode(MAX485_RE, OUTPUT);
+  pinMode(MAX485_DE, OUTPUT);
+  digitalWrite(MAX485_RE, 0);
+  digitalWrite(MAX485_DE, 0);
+  node.preTransmission(preTransmission);
+  node.postTransmission(postTransmission);
+  node.begin(pzemSlaveAddr, PZEMSerial);
+  delay(1000);
+  while (millis() - startMillis1 < 5000) {
+    delay(500);
+    Serial.println(".");
+  }
+  setShunt(pzemSlaveAddr);
+  changeAddress(0xF8, pzemSlaveAddr);
+}
+
+void loop()
+{
+  currentMillisPZEM = millis();
+  if (currentMillisPZEM - startMillisPZEM >= periodPZEM)
+  {
+    uint8_t result;
+    result = node.readInputRegisters(0x0000, 6);
+    if (result == node.ku8MBSuccess)
+    {
+      uint32_t tempdouble = 0x00000000;
+      PZEMVoltage = node.getResponseBuffer(0x0000) / 100.0;
+      PZEMCurrent = node.getResponseBuffer(0x0001) / 100.0;
+      tempdouble =  (node.getResponseBuffer(0x0003) << 16) + node.getResponseBuffer(0x0002);
+      PZEMPower = tempdouble / 10.0;
+      tempdouble =  (node.getResponseBuffer(0x0005) << 16) + node.getResponseBuffer(0x0004);
+      PZEMEnergy = tempdouble;
+      Serial.println();
+      Serial.print("Vdc : "); Serial.print(PZEMVoltage); Serial.println(" V ");
+      Serial.print("Idc : "); Serial.print(PZEMCurrent); Serial.println(" A ");
+      Serial.print("Power : "); Serial.print(PZEMPower); Serial.println(" W ");
+      Serial.print("Energy : "); Serial.print(PZEMEnergy); Serial.println(" Wh ");
+    }
+    else
+    {
+      //  Serial.println("Read false,Check module Rs485, Voltage INPUT !");
+      return;
+    }
+    startMillisPZEM = currentMillisPZEM ;
+  }
+}
+
+void preTransmission()
+{
+  if (millis() - startMillis1 > 5000)
+  {
+    digitalWrite(MAX485_RE, 1);
+    digitalWrite(MAX485_DE, 1);
+    delay(1);
+  }
+}
+
+void postTransmission()
+{
+  if (millis() - startMillis1 > 5000)
+  {
+    delay(3);
+    digitalWrite(MAX485_RE, 0);
+    digitalWrite(MAX485_DE, 0);
+  }
+}
+
+void setShunt(uint8_t slaveAddr)
+{
+  static uint8_t SlaveParameter = 0x06;
+  static uint16_t registerAddress = 0x0003;
+  uint16_t u16CRC = 0xFFFF;
+  u16CRC = crc16_update(u16CRC, slaveAddr);
+  u16CRC = crc16_update(u16CRC, SlaveParameter);
+  u16CRC = crc16_update(u16CRC, highByte(registerAddress));
+  u16CRC = crc16_update(u16CRC, lowByte(registerAddress));
+  u16CRC = crc16_update(u16CRC, highByte(NewshuntAddr));
+  u16CRC = crc16_update(u16CRC, lowByte(NewshuntAddr));
+  preTransmission();
+  PZEMSerial.write(slaveAddr);
+  PZEMSerial.write(SlaveParameter);
+  PZEMSerial.write(highByte(registerAddress));
+  PZEMSerial.write(lowByte(registerAddress));
+  PZEMSerial.write(highByte(NewshuntAddr));
+  PZEMSerial.write(lowByte(NewshuntAddr));
+  PZEMSerial.write(lowByte(u16CRC));
+  PZEMSerial.write(highByte(u16CRC));
+  delay(10);
+  postTransmission();
+  delay(100);
+}
+
+void resetEnergy()
+{
+  uint16_t u16CRC = 0xFFFF;
+  static uint8_t resetCommand = 0x42;
+  uint8_t slaveAddr = pzemSlaveAddr;
+  u16CRC = crc16_update(u16CRC, slaveAddr);
+  u16CRC = crc16_update(u16CRC, resetCommand);
+  preTransmission();
+  PZEMSerial.write(slaveAddr);
+  PZEMSerial.write(resetCommand);
+  PZEMSerial.write(lowByte(u16CRC));
+  PZEMSerial.write(highByte(u16CRC));
+  delay(10);
+  postTransmission();
+  delay(100);
+}
+
+void changeAddress(uint8_t OldslaveAddr, uint8_t NewslaveAddr)
+{
+  static uint8_t SlaveParameter = 0x06;
+  static uint16_t registerAddress = 0x0002;
+  uint16_t u16CRC = 0xFFFF;
+  u16CRC = crc16_update(u16CRC, OldslaveAddr);
+  u16CRC = crc16_update(u16CRC, SlaveParameter);
+  u16CRC = crc16_update(u16CRC, highByte(registerAddress));
+  u16CRC = crc16_update(u16CRC, lowByte(registerAddress));
+  u16CRC = crc16_update(u16CRC, highByte(NewslaveAddr));
+  u16CRC = crc16_update(u16CRC, lowByte(NewslaveAddr));
+  preTransmission();
+  PZEMSerial.write(OldslaveAddr);
+  PZEMSerial.write(SlaveParameter);
+  PZEMSerial.write(highByte(registerAddress));
+  PZEMSerial.write(lowByte(registerAddress));
+  PZEMSerial.write(highByte(NewslaveAddr));
+  PZEMSerial.write(lowByte(NewslaveAddr));
+  PZEMSerial.write(lowByte(u16CRC));
+  PZEMSerial.write(highByte(u16CRC));
+  delay(10);
+  postTransmission();
+  delay(100);
+}
